@@ -1,0 +1,74 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import spearmanr
+
+
+# Load patent data
+patent = pd.read_excel("patent_data.xlsx", sheet_name="sheet1", skiprows=2)
+patent = patent[patent["申请类型"] == "已授权"].copy()
+patent["EndDate"] = pd.to_datetime(patent["统计截止日期"])
+patent["Symbol"] = patent["证券代码"].astype(str).str.zfill(6)
+patent["Invention"] = pd.to_numeric(patent["发明专利"], errors="coerce")
+patent.dropna(subset=["Invention"], inplace=True)
+
+# adding suffixes to the Symbol column in patent so it matches the stock codes in the adjusted close price data
+def match_symbol(s, available):
+    if s + ".SZ" in available:
+        return s + ".SZ"
+    elif s + ".SH" in available:
+        return s + ".SH"
+    return np.nan
+
+# Load adjusted close prices
+price = pd.read_csv("s_dq_adjclose_v2.csv", index_col=0, parse_dates=True)
+price = price.sort_index()
+
+# Prepare Factor Data
+
+# Add suffix to symbols
+symbols = patent["Symbol"].unique()
+valid_symbols = [s for s in symbols if s + ".SZ" in price.columns or s + ".SH" in price.columns]
+patent["Symbol"] = patent["Symbol"].apply(lambda x: match_symbol(x, price.columns))
+patent.dropna(subset=["Symbol"], inplace=True)
+
+# Pivot to wide format
+factor = patent.pivot(index="EndDate", columns="Symbol", values="Invention")
+factor = factor.resample("M").ffill()
+
+# Compute Forward Returns
+
+returns = price.pct_change(5).shift(-5)
+returns = returns.resample("M").last()
+
+# Align & Compute IC
+
+common_dates = factor.index.intersection(returns.index)
+common_symbols = factor.columns.intersection(returns.columns)
+factor = factor.loc[common_dates, common_symbols]
+returns = returns.loc[common_dates, common_symbols]
+
+# Monthly Spearman IC
+monthly_ic = factor.corrwith(returns, axis=1, method='spearman')
+
+mean_ic = monthly_ic.mean()
+std_ic = monthly_ic.std()
+ic_ir = mean_ic / std_ic
+ic_pos_ratio = (monthly_ic > 0).mean()
+
+print("=== IC Summary ===")
+print(f"Mean IC:      {mean_ic:.4f}")
+print(f"Std Dev IC:   {std_ic:.4f}")
+print(f"IC IR:        {ic_ir:.4f}")
+print(f"IC > 0 freq:  {ic_pos_ratio:.2%}")
+
+# Plot IC Time Series
+
+plt.figure(figsize=(12, 4))
+monthly_ic.plot(marker='o')
+plt.title("Monthly Spearman IC: Factor_fmsq_1Y_num")
+plt.axhline(mean_ic, color='red', linestyle='--', label=f"Mean IC = {mean_ic:.4f}")
+plt.grid(True)
+plt.legend()
+plt.tight_layout()
+plt.show()
